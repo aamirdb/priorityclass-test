@@ -1,0 +1,114 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: tier2-test-priority
+# Places the workload in Cluster Autoscaler's Tier 2 bucket (priority >= 1,000,000,000),
+# the exact same eviction bucket as system-node-critical (2,000,001,000)
+value: 1000000000
+globalDefault: false
+description: "Tier 2 priority bucket to test concurrent eviction with fluentbit-gke"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment-anti-affinity
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: anti-affinity-holder
+  template:
+    metadata:
+      labels:
+        app: anti-affinity-holder
+    spec:
+      nodeSelector:
+        workload-separation: "true"
+      tolerations:
+      - key: "workload-separation"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values: ["anti-affinity-holder"]
+            topologyKey: "kubernetes.io/hostname"
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.9
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment-tier2-logger
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: tier2-logger
+  template:
+    metadata:
+      labels:
+        app: tier2-logger
+    spec:
+      priorityClassName: tier2-test-priority
+      terminationGracePeriodSeconds: 45
+      nodeSelector:
+        workload-separation: "true"
+      tolerations:
+      - key: "workload-separation"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: tier2-logger
+      containers:
+      - name: logger
+        image: bash:5.2
+        resources:
+          requests:
+            # 1 CPU / 4Gi on e2-standard-8 (8 vCPU / 32Gi) = 12.5% utilization (< 50% threshold)
+            cpu: "1"
+            memory: "4Gi"
+        command: ["bash", "-c"]
+        args:
+        - |
+          on_sigterm() {
+            ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            echo "[SIGTERM_RECEIVED] pod=${HOSTNAME} node=${NODE_NAME} ts=${ts} starting 30s graceful shutdown drain..."
+            for seq in $(seq 1 30); do
+              sleep 1
+              ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+              echo "[SHUTDOWN_LOG] seq=${seq}/30 pod=${HOSTNAME} node=${NODE_NAME} ts=${ts}"
+            done
+            ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            echo "[FINAL_EXIT] pod=${HOSTNAME} node=${NODE_NAME} ts=${ts} shutdown complete after 30s!"
+            exit 0
+          }
+          trap on_sigterm SIGTERM
+          echo "[READY] pod=${HOSTNAME} node=${NODE_NAME} waiting for SIGTERM..."
+          while true; do
+            sleep 1 &
+            wait $!
+          done
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName

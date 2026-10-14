@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+  namespace: default
+spec:
+  replicas: 10
+  selector:
+    matchLabels:
+      app: test-app
+  template:
+    metadata:
+      labels:
+        app: test-app
+    spec:
+      priorityClassName: low-priority-app
+      terminationGracePeriodSeconds: 90
+      nodeSelector:
+        test-env: priority-test
+      tolerations:
+      - key: test-workload
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+      containers:
+      - name: app
+        image: alpine:latest
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          trap 'echo "{\"event\": \"shutdown_start\", \"timestamp\": \"$(date +%Y-%m-%dT%H:%M:%S.%N)\", \"msg\": \"App received SIGTERM, flushing data\"}"; sleep 15; echo "{\"event\": \"shutdown_complete\", \"timestamp\": \"$(date +%Y-%m-%dT%H:%M:%S.%N)\", \"msg\": \"App successfully terminated\"}"; exit 0' TERM INT
+          echo "{\"event\": \"app_ready\", \"timestamp\": \"$(date +%Y-%m-%dT%H:%M:%S.%N)\", \"msg\": \"App is running\"}"
+          while true; do sleep 1; done

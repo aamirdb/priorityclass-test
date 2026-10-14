@@ -1,0 +1,16 @@
+# Python virtualenv (created in project root)
+bin/
+lib/
+lib64
+include/
+pyvenv.cfg
+__pycache__/
+*.pyc
+
+# Local logs
+*.log
+
+# Terraform local state
+tf-test/.terraform/
+*.tfstate
+*.tfstate.*
